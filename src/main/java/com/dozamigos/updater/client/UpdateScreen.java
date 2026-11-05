@@ -14,32 +14,77 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class UpdateScreen extends Screen {
-    private enum State { PROMPT, DOWNLOADING, DONE, ERROR }
+    private enum State { CHECKING, UP_TO_DATE, PROMPT, DOWNLOADING, DONE, ERROR }
 
     private static final int MAX_LINES = 7;
-    private static final int WHITE = 0xFFFFFFFF;
+    private static final int PANEL_W = 300;
+    private static final int TEXT = 0xFF303030;
+    private static final int GREEN = 0xFF1E7B1E;
+    private static final int RED = 0xFFAA0000;
 
     private final Screen parent;
-    private final Updater.Plan plan;
+    private volatile Updater.Plan plan;
     private final List<Component> lines = new ArrayList<>();
+    private int added, changed, removed;
 
-    private volatile State state = State.PROMPT;
+    private volatile State state;
     private volatile String currentFile = "";
     private volatile int index, total;
     private volatile long done, overall;
     private volatile String error = "";
     private State builtFor;
+    private boolean downloadFailed;
 
+    /** Abre ja com as mudancas encontradas (verificacao automatica ao iniciar). */
     public UpdateScreen(Screen parent, Updater.Plan plan) {
         super(Component.literal("Atualização do Modpack"));
         this.parent = parent;
-        this.plan = plan;
-        for (Updater.Item it : plan.download) {
+        setPlan(plan);
+        state = State.PROMPT;
+    }
+
+    /** Abre verificando sozinho (botao do menu). */
+    public UpdateScreen(Screen parent) {
+        super(Component.literal("Atualização do Modpack"));
+        this.parent = parent;
+        state = State.CHECKING;
+        Thread t = new Thread(() -> {
+            try {
+                Updater.Plan p = Updater.check();
+                if (p == null) {
+                    fail("Repositório não configurado em config/dozamigosupdater.properties");
+                } else if (p.isEmpty()) {
+                    state = State.UP_TO_DATE;
+                } else {
+                    setPlan(p);
+                    state = State.PROMPT;
+                }
+            } catch (Exception e) {
+                fail("Não foi possível acessar o GitHub");
+            }
+        }, "dozamigos-updater-manual-check");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void fail(String msg) {
+        error = msg;
+        downloadFailed = false;
+        state = State.ERROR;
+    }
+
+    private synchronized void setPlan(Updater.Plan p) {
+        plan = p;
+        lines.clear();
+        added = changed = removed = 0;
+        for (Updater.Item it : p.download) {
             boolean exists = Files.exists(Path.of("mods", it.name()));
+            if (exists) changed++; else added++;
             lines.add(Component.literal(exists ? "~ " : "+ ").withStyle(exists ? ChatFormatting.YELLOW : ChatFormatting.GREEN)
                     .append(Component.literal(it.name()).withStyle(ChatFormatting.WHITE)));
         }
-        for (String name : plan.delete) {
+        for (String name : p.delete) {
+            removed++;
             lines.add(Component.literal("- ").withStyle(ChatFormatting.RED)
                     .append(Component.literal(name).withStyle(ChatFormatting.GRAY)));
         }
@@ -57,15 +102,25 @@ public final class UpdateScreen extends Screen {
                 addRenderableWidget(Button.builder(Component.literal("Agora não"), b -> onClose())
                         .bounds(cx + 2, y, 100, 20).build());
             }
-            case DONE -> addRenderableWidget(Button.builder(Component.literal("Fechar o jogo"), b -> Minecraft.getInstance().stop())
+            case UP_TO_DATE, CHECKING -> addRenderableWidget(Button.builder(Component.literal(state == State.CHECKING ? "Cancelar" : "Voltar"), b -> onClose())
+                    .bounds(cx - 50, y, 100, 20).build());
+            case DONE -> addRenderableWidget(Button.builder(Component.literal("Fechar o Minecraft"), b -> Minecraft.getInstance().stop())
                     .bounds(cx - 100, y, 200, 20).build());
             case ERROR -> {
-                addRenderableWidget(Button.builder(Component.literal("Tentar de novo"), b -> startDownload())
+                addRenderableWidget(Button.builder(Component.literal("Tentar de novo"), b -> retry())
                         .bounds(cx - 102, y, 100, 20).build());
-                addRenderableWidget(Button.builder(Component.literal("Continuar assim"), b -> onClose())
+                addRenderableWidget(Button.builder(Component.literal("Voltar"), b -> onClose())
                         .bounds(cx + 2, y, 100, 20).build());
             }
             default -> { }
+        }
+    }
+
+    private void retry() {
+        if (downloadFailed && plan != null) {
+            startDownload();
+        } else {
+            Minecraft.getInstance().gui.setScreen(new UpdateScreen(parent));
         }
     }
 
@@ -83,7 +138,8 @@ public final class UpdateScreen extends Screen {
                 });
                 state = State.DONE;
             } catch (Exception e) {
-                error = e.getClass().getSimpleName() + ": " + e.getMessage();
+                error = "Falha ao baixar os mods. Verifique a internet.";
+                downloadFailed = true;
                 state = State.ERROR;
             }
         }, "dozamigos-updater-download");
@@ -99,7 +155,7 @@ public final class UpdateScreen extends Screen {
 
     @Override
     public boolean shouldCloseOnEsc() {
-        return state == State.PROMPT || state == State.ERROR;
+        return state != State.DOWNLOADING;
     }
 
     @Override
@@ -112,18 +168,22 @@ public final class UpdateScreen extends Screen {
     public void extractBackground(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
         super.extractBackground(g, mouseX, mouseY, partialTick);
 
-        int panelW = 300;
-        int left = width / 2 - panelW / 2;
+        int left = width / 2 - PANEL_W / 2;
         int top = height / 2 - 90;
         int bottom = height / 2 + 100;
 
         // Painel estilo inventario: borda preta, bevel claro/escuro e fundo cinza
-        g.fill(left - 2, top - 2, left + panelW + 2, bottom + 2, 0xFF000000);
-        g.fill(left, top, left + panelW, bottom, 0xFFC6C6C6);
-        g.fill(left, top, left + panelW, top + 2, 0xFFFFFFFF);
+        g.fill(left - 2, top - 2, left + PANEL_W + 2, bottom + 2, 0xFF000000);
+        g.fill(left, top, left + PANEL_W, bottom, 0xFFC6C6C6);
+        g.fill(left, top, left + PANEL_W, top + 2, 0xFFFFFFFF);
         g.fill(left, top, left + 2, bottom, 0xFFFFFFFF);
-        g.fill(left, bottom - 2, left + panelW, bottom, 0xFF555555);
-        g.fill(left + panelW - 2, top, left + panelW, bottom, 0xFF555555);
+        g.fill(left, bottom - 2, left + PANEL_W, bottom, 0xFF555555);
+        g.fill(left + PANEL_W - 2, top, left + PANEL_W, bottom, 0xFF555555);
+    }
+
+    // Texto sem sombra: no painel claro a sombra deixava as letras borradas.
+    private void center(GuiGraphicsExtractor g, String s, int y, int color) {
+        g.text(font, s, width / 2 - font.width(s) / 2, y, color, false);
     }
 
     @Override
@@ -131,49 +191,63 @@ public final class UpdateScreen extends Screen {
         super.extractRenderState(g, mouseX, mouseY, partialTick);
 
         int cx = width / 2;
-        int panelW = 300;
-        int left = cx - panelW / 2;
+        int left = cx - PANEL_W / 2;
         int top = height / 2 - 90;
 
-        g.centeredText(font, Component.literal("Dozamigos Modpack").withStyle(ChatFormatting.DARK_GRAY, ChatFormatting.BOLD), cx, top + 8, 0xFF404040);
+        center(g, "Dozamigos Modpack", top + 10, TEXT);
 
         switch (state) {
+            case CHECKING -> center(g, "Verificando atualizações...", top + 80, TEXT);
+            case UP_TO_DATE -> {
+                center(g, "Tudo certo!", top + 70, GREEN);
+                center(g, "Seu modpack já está na versão mais recente.", top + 90, TEXT);
+            }
             case PROMPT -> {
-                g.centeredText(font, Component.literal("Há uma atualização disponível!").withStyle(ChatFormatting.DARK_GREEN), cx, top + 24, 0xFF00AA00);
-                drawList(g, left + 12, top + 42);
+                center(g, "Nova atualização disponível", top + 26, GREEN);
+                center(g, summary(), top + 40, TEXT);
+                drawList(g, left + 12, top + 56);
             }
             case DOWNLOADING -> {
-                g.centeredText(font, Component.literal("Baixando mods...").withStyle(ChatFormatting.DARK_GRAY), cx, top + 30, 0xFF404040);
-                g.centeredText(font, Component.literal(currentFile + " (" + index + "/" + total + ")"), cx, top + 50, 0xFF202020);
-                drawBar(g, left + 20, top + 80, panelW - 40, overall == 0 ? 0 : (float) done / overall);
-                g.centeredText(font, Component.literal(mb(done) + " / " + mb(overall)), cx, top + 98, 0xFF404040);
-                g.centeredText(font, Component.literal("Não feche o jogo").withStyle(ChatFormatting.DARK_RED), cx, top + 125, 0xFFAA0000);
+                center(g, "Baixando atualização...", top + 34, TEXT);
+                center(g, currentFile, top + 54, TEXT);
+                center(g, "Arquivo " + index + " de " + total, top + 66, 0xFF555555);
+                float pct = overall == 0 ? 0 : (float) done / overall;
+                drawBar(g, left + 20, top + 86, PANEL_W - 40, pct);
+                center(g, (int) (pct * 100) + "%  -  " + mb(done) + " de " + mb(overall), top + 104, TEXT);
+                center(g, "Não feche o jogo durante o download.", top + 130, RED);
             }
             case DONE -> {
-                g.centeredText(font, Component.literal("Modpack atualizado!").withStyle(ChatFormatting.DARK_GREEN), cx, top + 40, 0xFF00AA00);
-                drawBar(g, left + 20, top + 80, panelW - 40, 1f);
-                g.centeredText(font, Component.literal("Abra o Minecraft novamente para jogar com a nova versão."), cx, top + 105, 0xFF202020);
+                center(g, "Atualização concluída!", top + 44, GREEN);
+                drawBar(g, left + 20, top + 70, PANEL_W - 40, 1f);
+                center(g, "Feche o Minecraft e abra novamente", top + 100, TEXT);
+                center(g, "para jogar com os mods atualizados.", top + 112, TEXT);
             }
             case ERROR -> {
-                g.centeredText(font, Component.literal("Falha na atualização").withStyle(ChatFormatting.DARK_RED), cx, top + 40, 0xFFAA0000);
-                g.centeredText(font, Component.literal(error), cx, top + 65, 0xFF202020);
-                g.centeredText(font, Component.literal("Verifique a internet e tente de novo."), cx, top + 85, 0xFF404040);
+                center(g, "Algo deu errado", top + 56, RED);
+                center(g, error, top + 80, TEXT);
             }
         }
     }
 
-    private void drawList(GuiGraphicsExtractor g, int x, int y) {
+    private String summary() {
+        List<String> parts = new ArrayList<>();
+        if (added > 0) parts.add(added + (added == 1 ? " novo" : " novos"));
+        if (changed > 0) parts.add(changed + (changed == 1 ? " atualizado" : " atualizados"));
+        if (removed > 0) parts.add(removed + (removed == 1 ? " removido" : " removidos"));
+        return String.join("  -  ", parts);
+    }
+
+    private synchronized void drawList(GuiGraphicsExtractor g, int x, int y) {
         boolean overflow = lines.size() > MAX_LINES;
         int shown = overflow ? MAX_LINES - 1 : lines.size();
         g.fill(x - 2, y - 2, x + 276 + 2, y + MAX_LINES * 12 + 2, 0xFF373737);
         g.fill(x, y, x + 276, y + MAX_LINES * 12, 0xFF8B8B8B);
         for (int i = 0; i < shown; i++) {
-            g.text(font, lines.get(i), x + 4, y + 2 + i * 12, WHITE, true);
+            g.text(font, lines.get(i), x + 4, y + 2 + i * 12, 0xFFFFFFFF, true);
         }
         if (overflow) {
-            g.text(font, Component.literal("... e mais " + (lines.size() - shown)), x + 4, y + 2 + shown * 12, WHITE, true);
+            g.text(font, Component.literal("... e mais " + (lines.size() - shown)), x + 4, y + 2 + shown * 12, 0xFFFFFFFF, true);
         }
-        g.centeredText(font, Component.literal("+ novo   ~ atualizado   - removido").withStyle(ChatFormatting.DARK_GRAY), width / 2, y + MAX_LINES * 12 + 8, 0xFF404040);
     }
 
     // Barra de XP: moldura preta, fundo escuro e preenchimento verde em blocos

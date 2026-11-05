@@ -4,7 +4,7 @@ license="All Rights Reserved"
 
 [[mods]]
 modId="dozamigosupdater"
-version="1.1.1"
+version="1.2.0"
 displayName="Dozamigos Modpack Updater"
 authors="Dozamigos"
 description='''Sincroniza a pasta mods com um repositorio do GitHub (adiciona, atualiza e remove mods automaticamente).'''

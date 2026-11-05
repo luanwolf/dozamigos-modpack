@@ -3,7 +3,9 @@ package com.dozamigos.updater.client;
 import com.dozamigos.updater.Updater;
 import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.network.chat.Component;
 import net.minecraftforge.client.event.ScreenEvent;
 import org.slf4j.Logger;
 
@@ -16,6 +18,7 @@ public final class ClientHooks {
 
     public static void init() {
         ScreenEvent.Opening.BUS.addListener(ClientHooks::onOpening);
+        ScreenEvent.Init.Post.BUS.addListener(ClientHooks::onInit);
         Thread t = new Thread(() -> {
             try {
                 Updater.Plan p = Updater.check();
@@ -41,6 +44,13 @@ public final class ClientHooks {
             event.setNewScreen(new UpdateScreen(title, pending));
         }
         return false;
+    }
+
+    private static void onInit(ScreenEvent.Init.Post event) {
+        if (event.getScreen() instanceof TitleScreen title) {
+            event.addListener(Button.builder(Component.literal("Verificar modpack"),
+                    b -> Minecraft.getInstance().gui.setScreen(new UpdateScreen(title))).bounds(4, 4, 110, 20).build());
+        }
     }
 
     private static void show(TitleScreen title) {
