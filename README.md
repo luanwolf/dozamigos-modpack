@@ -1,9 +1,10 @@
 # Dozamigos Modpack Updater (Forge 26.3)
 
-Ao abrir o Minecraft, o mod compara a pasta `mods` com uma pasta de um repositório GitHub e:
-adiciona mods novos, atualiza os alterados (por hash) e remove os que saíram do repositório
-(apenas os que ele mesmo instalou antes; mods pessoais ficam intactos).
-Após atualizar, o jogo fecha com um aviso: basta abrir de novo.
+Ao abrir o Minecraft, o mod compara a pasta `mods` com uma pasta de um repositório GitHub. Se houver diferença,
+aparece uma tela no menu principal (estilo Minecraft) listando o que é novo (+), atualizado (~) e removido (-).
+O jogador clica em **Atualizar agora**, vê a barra de progresso do download e, no fim, **Fechar o jogo** para reabrir
+com o modpack novo. Em servidor dedicado (sem tela) a atualização é aplicada direto.
+Só remove mods que ele mesmo instalou antes; mods pessoais ficam intactos.
 
 ## Como usar
 1. Crie um repositório no GitHub e coloque os `.jar` do modpack na pasta `mods/`.

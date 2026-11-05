@@ -7,7 +7,6 @@ import com.google.gson.JsonParser;
 import com.mojang.logging.LogUtils;
 import org.slf4j.Logger;
 
-import java.awt.GraphicsEnvironment;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -25,7 +24,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 
-final class Updater {
+public final class Updater {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final Path CONFIG = Path.of("config", "dozamigosupdater.properties");
     private static final Path MANAGED = Path.of("config", "dozamigosupdater.managed");
@@ -34,62 +33,97 @@ final class Updater {
 
     private Updater() {}
 
-    static void run() throws Exception {
+    public record Item(String name, String sha, long size) {}
+
+    public interface Progress {
+        void update(String file, int index, int total, long done, long overall);
+    }
+
+    public static final class Plan {
+        String repo, branch, dir, token;
+        boolean exit;
+        Map<String, Item> remote;
+        public List<Item> download = new ArrayList<>();
+        public List<String> delete = new ArrayList<>();
+
+        public boolean isEmpty() {
+            return download.isEmpty() && delete.isEmpty();
+        }
+
+        long totalBytes() {
+            return download.stream().mapToLong(Item::size).sum();
+        }
+    }
+
+    /** Compara o GitHub com a pasta mods. Retorna null se o repo nao estiver configurado. */
+    public static Plan check() throws Exception {
         Properties cfg = loadConfig();
-        String repo = cfg.getProperty("repo", "").trim();
-        if (repo.isEmpty() || repo.equals("OWNER/REPO")) {
+        Plan p = new Plan();
+        p.repo = cfg.getProperty("repo", "").trim();
+        if (p.repo.isEmpty() || p.repo.equals("OWNER/REPO")) {
             LOGGER.warn("Defina 'repo' em {} para ativar o auto-update", CONFIG);
-            return;
+            return null;
         }
-        String branch = cfg.getProperty("branch", "main").trim();
-        String dir = cfg.getProperty("path", "mods").trim().replaceAll("^/+|/+$", "");
-        String token = cfg.getProperty("token", "").trim();
-        boolean exit = Boolean.parseBoolean(cfg.getProperty("exitAfterUpdate", "true"));
+        p.branch = cfg.getProperty("branch", "main").trim();
+        p.dir = cfg.getProperty("path", "mods").trim().replaceAll("^/+|/+$", "");
+        p.token = cfg.getProperty("token", "").trim();
+        p.exit = Boolean.parseBoolean(cfg.getProperty("exitAfterUpdate", "true"));
 
-        Map<String, String> remote = fetchRemote(repo, branch, dir, token);
+        p.remote = fetchRemote(p.repo, p.branch, p.dir, p.token);
         String self = selfJarName();
-        remote.remove(self);
+        p.remote.remove(self);
 
-        Set<String> managed = readManaged();
         Files.createDirectories(MODS);
-
-        Map<String, String> toDownload = new LinkedHashMap<>();
-        for (var e : remote.entrySet()) {
-            Path local = MODS.resolve(e.getKey());
-            if (!Files.exists(local) || !gitBlobSha(local).equals(e.getValue())) {
-                toDownload.put(e.getKey(), e.getValue());
+        for (Item it : p.remote.values()) {
+            Path local = MODS.resolve(it.name());
+            if (!Files.exists(local) || !gitBlobSha(local).equals(it.sha())) {
+                p.download.add(it);
             }
         }
-        List<String> toDelete = new ArrayList<>();
-        for (String name : managed) {
-            if (!remote.containsKey(name) && !name.equals(self) && Files.exists(MODS.resolve(name))) {
-                toDelete.add(name);
+        for (String name : readManaged()) {
+            if (!p.remote.containsKey(name) && !name.equals(self) && Files.exists(MODS.resolve(name))) {
+                p.delete.add(name);
             }
         }
-
-        if (toDownload.isEmpty() && toDelete.isEmpty()) {
-            writeManaged(remote.keySet());
-            LOGGER.info("Modpack ja esta atualizado ({} mods)", remote.size());
-            return;
+        if (p.isEmpty()) {
+            writeManaged(p.remote.keySet());
+            LOGGER.info("Modpack ja esta atualizado ({} mods)", p.remote.size());
         }
+        return p;
+    }
 
-        for (var e : toDownload.entrySet()) {
-            LOGGER.info("Baixando {}", e.getKey());
-            download(repo, branch, dir, e.getKey(), e.getValue(), token, MODS.resolve(e.getKey() + TMP_SUFFIX));
+    /** Baixa e aplica o plano. Em caso de erro, remove os temporarios e repassa a excecao. */
+    public static void apply(Plan p, Progress progress) throws Exception {
+        long overall = p.totalBytes();
+        long[] done = {0};
+        try {
+            int i = 0;
+            for (Item it : p.download) {
+                i++;
+                LOGGER.info("Baixando {}", it.name());
+                int idx = i;
+                download(p, it, MODS.resolve(it.name() + TMP_SUFFIX), n -> {
+                    done[0] += n;
+                    if (progress != null) progress.update(it.name(), idx, p.download.size(), done[0], overall);
+                });
+            }
+        } catch (Exception e) {
+            for (Item it : p.download) Files.deleteIfExists(MODS.resolve(it.name() + TMP_SUFFIX));
+            throw e;
         }
 
         // Em Windows um jar carregado fica travado: o que falhar aqui e aplicado depois que o jogo fechar.
         List<String> deferred = new ArrayList<>();
-        for (String name : toDownload.keySet()) {
-            Path tmp = MODS.resolve(name + TMP_SUFFIX);
-            Path target = MODS.resolve(name);
+        for (Item it : p.download) {
+            Path tmp = MODS.resolve(it.name() + TMP_SUFFIX);
+            Path target = MODS.resolve(it.name());
             try {
                 Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException ex) {
                 deferred.add("Move-Item -LiteralPath " + q(tmp) + " -Destination " + q(target) + " -Force");
             }
         }
-        for (String name : toDelete) {
+        for (String name : p.delete) {
             Path target = MODS.resolve(name);
             try {
                 Files.deleteIfExists(target);
@@ -97,23 +131,19 @@ final class Updater {
                 deferred.add("Remove-Item -LiteralPath " + q(target) + " -Force");
             }
         }
-        writeManaged(remote.keySet());
+        writeManaged(p.remote.keySet());
         if (!deferred.isEmpty()) {
             spawnDeferred(deferred);
         }
+    }
 
-        String msg = "Modpack atualizado: " + toDownload.size() + " baixado(s)/atualizado(s), "
-                + toDelete.size() + " removido(s).\nReabra o Minecraft para aplicar as mudancas.";
-        LOGGER.warn(msg);
-        if (exit) {
-            if (!GraphicsEnvironment.isHeadless()) {
-                try {
-                    javax.swing.JOptionPane.showMessageDialog(null, msg, "Dozamigos Modpack", javax.swing.JOptionPane.INFORMATION_MESSAGE);
-                } catch (Throwable ignored) {
-                }
-            }
-            Runtime.getRuntime().halt(0);
-        }
+    /** Servidor dedicado: sem interface, aplica direto e fecha. */
+    static void runHeadless() throws Exception {
+        Plan p = check();
+        if (p == null || p.isEmpty()) return;
+        apply(p, null);
+        LOGGER.warn("Modpack atualizado ({} baixado(s), {} removido(s)). Reinicie o servidor.", p.download.size(), p.delete.size());
+        if (p.exit) Runtime.getRuntime().halt(0);
     }
 
     private static Properties loadConfig() throws IOException {
@@ -138,7 +168,7 @@ final class Updater {
         return p;
     }
 
-    private static Map<String, String> fetchRemote(String repo, String branch, String dir, String token) throws IOException {
+    private static Map<String, Item> fetchRemote(String repo, String branch, String dir, String token) throws IOException {
         String url = "https://api.github.com/repos/" + repo + "/git/trees/" + branch + "?recursive=1";
         JsonObject root;
         try (InputStream in = open(url, token, "application/vnd.github+json")) {
@@ -148,7 +178,7 @@ final class Updater {
             LOGGER.warn("Lista do GitHub truncada, alguns mods podem ser ignorados");
         }
         String prefix = dir.isEmpty() ? "" : dir + "/";
-        Map<String, String> out = new LinkedHashMap<>();
+        Map<String, Item> out = new LinkedHashMap<>();
         JsonArray tree = root.getAsJsonArray("tree");
         for (JsonElement el : tree) {
             JsonObject o = el.getAsJsonObject();
@@ -156,31 +186,36 @@ final class Updater {
             if (!"blob".equals(o.get("type").getAsString()) || !path.startsWith(prefix)) continue;
             String name = path.substring(prefix.length());
             if (name.contains("/") || !name.endsWith(".jar")) continue;
-            out.put(name, o.get("sha").getAsString());
+            out.put(name, new Item(name, o.get("sha").getAsString(), o.has("size") ? o.get("size").getAsLong() : 0));
         }
         return out;
     }
 
-    private static void download(String repo, String branch, String dir, String name, String sha, String token, Path dest) throws IOException {
+    private static void download(Plan p, Item item, Path dest, java.util.function.LongConsumer onBytes) throws IOException {
         String url;
         String accept = null;
-        if (token.isEmpty()) {
-            String path = "/" + repo + "/" + branch + "/" + (dir.isEmpty() ? "" : dir + "/") + name;
+        if (p.token.isEmpty()) {
+            String path = "/" + p.repo + "/" + p.branch + "/" + (p.dir.isEmpty() ? "" : p.dir + "/") + item.name();
             try {
                 url = new URI("https", "raw.githubusercontent.com", path, null).toASCIIString();
             } catch (Exception e) {
                 throw new IOException(e);
             }
         } else {
-            url = "https://api.github.com/repos/" + repo + "/git/blobs/" + sha;
+            url = "https://api.github.com/repos/" + p.repo + "/git/blobs/" + item.sha();
             accept = "application/vnd.github.raw+json";
         }
-        try (InputStream in = open(url, token, accept)) {
-            Files.copy(in, dest, StandardCopyOption.REPLACE_EXISTING);
+        try (InputStream in = open(url, p.token, accept); var out = Files.newOutputStream(dest)) {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+                onBytes.accept(n);
+            }
         }
-        if (!gitBlobSha(dest).equals(sha)) {
+        if (!gitBlobSha(dest).equals(item.sha())) {
             Files.deleteIfExists(dest);
-            throw new IOException("Hash invalido ao baixar " + name);
+            throw new IOException("Hash invalido ao baixar " + item.name());
         }
     }
 
