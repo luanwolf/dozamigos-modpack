@@ -107,13 +107,13 @@ public final class UpdateScreen extends Screen {
         Minecraft.getInstance().gui.setScreen(parent);
     }
 
+    // O painel vai no fundo para nao cobrir os botoes, que sao desenhados depois.
     @Override
-    public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        super.extractRenderState(g, mouseX, mouseY, partialTick);
+    public void extractBackground(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+        super.extractBackground(g, mouseX, mouseY, partialTick);
 
-        int cx = width / 2;
         int panelW = 300;
-        int left = cx - panelW / 2;
+        int left = width / 2 - panelW / 2;
         int top = height / 2 - 90;
         int bottom = height / 2 + 100;
 
@@ -124,6 +124,16 @@ public final class UpdateScreen extends Screen {
         g.fill(left, top, left + 2, bottom, 0xFFFFFFFF);
         g.fill(left, bottom - 2, left + panelW, bottom, 0xFF555555);
         g.fill(left + panelW - 2, top, left + panelW, bottom, 0xFF555555);
+    }
+
+    @Override
+    public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+        super.extractRenderState(g, mouseX, mouseY, partialTick);
+
+        int cx = width / 2;
+        int panelW = 300;
+        int left = cx - panelW / 2;
+        int top = height / 2 - 90;
 
         g.centeredText(font, Component.literal("Dozamigos Modpack").withStyle(ChatFormatting.DARK_GRAY, ChatFormatting.BOLD), cx, top + 8, 0xFF404040);
 
@@ -153,13 +163,14 @@ public final class UpdateScreen extends Screen {
     }
 
     private void drawList(GuiGraphicsExtractor g, int x, int y) {
-        int shown = Math.min(lines.size(), MAX_LINES);
+        boolean overflow = lines.size() > MAX_LINES;
+        int shown = overflow ? MAX_LINES - 1 : lines.size();
         g.fill(x - 2, y - 2, x + 276 + 2, y + MAX_LINES * 12 + 2, 0xFF373737);
         g.fill(x, y, x + 276, y + MAX_LINES * 12, 0xFF8B8B8B);
         for (int i = 0; i < shown; i++) {
             g.text(font, lines.get(i), x + 4, y + 2 + i * 12, WHITE, true);
         }
-        if (lines.size() > shown) {
+        if (overflow) {
             g.text(font, Component.literal("... e mais " + (lines.size() - shown)), x + 4, y + 2 + shown * 12, WHITE, true);
         }
         g.centeredText(font, Component.literal("+ novo   ~ atualizado   - removido").withStyle(ChatFormatting.DARK_GRAY), width / 2, y + MAX_LINES * 12 + 8, 0xFF404040);
