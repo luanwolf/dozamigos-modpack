@@ -1,0 +1,24 @@
+modLoader="javafml"
+loaderVersion="[66,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="dozamigosupdater"
+version="1.0.0"
+displayName="Dozamigos Modpack Updater"
+authors="Dozamigos"
+description='''Sincroniza a pasta mods com um repositorio do GitHub (adiciona, atualiza e remove mods automaticamente).'''
+
+[[dependencies.dozamigosupdater]]
+    modId="forge"
+    mandatory=true
+    versionRange="[66,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.dozamigosupdater]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[26.3,26.4,)"
+    ordering="NONE"
+    side="BOTH"
